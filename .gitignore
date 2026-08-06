@@ -5,10 +5,14 @@ outputs_test.parquet
 # Local warehouse data (17 GB, read-only source - never commit)
 data/
 
-# Python
-__pycache__/
-*.pyc
+# CMake build tree (also holds the fetched duckdb / Matplot++ / GoogleTest deps)
+build/
+
+# Leftovers from the removed Python implementation; .venv still ships a usable
+# libtorch, so it is kept ignored rather than assumed gone.
 .venv/
+.pytest_cache/
+.ruff_cache/
 
 # Editor
 PowerShellEditorServices.json

@@ -15,8 +15,8 @@ statistical profile into a latent space that is:
    guess the decade from the embedding much better than chance.
 
 The result: embeddings you can compare directly across decades. Query LeBron's
-2023-24 season and get Karl Malone, Kawhi Leonard, Dirk Nowitzki, and Julius
-Erving; query Wilt's 1961-62 and get Kareem, Walt Bellamy, and Wes Unseld.
+2023-24 season and get Karl Malone, Julius Erving, Patrick Ewing, and Kevin Durant;
+query Wilt's 1961-62 and get his cross-era peers rather than his contemporaries.
 
 ## How it works
 
@@ -55,13 +55,48 @@ player-season stats (23,516 rows, 1946-47 .. 2025-26)
 
 ## Setup
 
-Requires Python >= 3.12 and [uv](https://docs.astral.sh/uv/).
+Requires a C++20 compiler (MSVC 2022+), CMake 3.24+, and Ninja. The build targets
+Windows x64; `duckdb.dll` and the torch DLLs are copied next to the executables.
+
+CMake fetches its dependencies on first configure:
+
+| Dependency | How it arrives |
+|---|---|
+| **LibTorch** 2.13.0+cpu | Downloaded (~250 MB), or reused via `-DCMAKE_PREFIX_PATH` |
+| **DuckDB** 1.5.5 | Prebuilt `libduckdb-windows-amd64.zip` (~13 MB), no compile |
+| **Matplot++** 1.2.2 | Built from source |
+| **GoogleTest** 1.17.0 | Built from source |
+
+DuckDB is used through its **C API** (`duckdb.h`) — the project's own docs describe
+the C++ API as internal and unstable and recommend the C API for applications.
 
 ```bash
-uv sync          # installs pinned-latest deps into .venv (CPU torch)
-uv run pytest    # 13 tests
-uv run ruff check era_translator tests
-uv run ty check era_translator
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+```
+
+If you already have a libtorch on disk (a PyTorch install ships one), point at it
+to skip the download:
+
+```bash
+cmake -B build -G Ninja -DCMAKE_PREFIX_PATH=<path>/site-packages/torch
+```
+
+Then build and test:
+
+```bash
+cmake --build build
+```
+
+```bash
+ctest --test-dir build --output-on-failure
+```
+
+**gnuplot is a runtime prerequisite for the t-SNE plot only.** Matplot++ renders
+through it, so without gnuplot 5.2.6+ on PATH every stage still runs and the plot
+step is skipped with a message. Configure warns if it is missing.
+
+```bash
+scoop install gnuplot
 ```
 
 The warehouse lives at `data/nba.duckdb` (read-only source; not committed).
@@ -69,52 +104,67 @@ The warehouse lives at `data/nba.duckdb` (read-only source; not committed).
 ## Run
 
 ```bash
-uv run python -m era_translator.main --db data/nba.duckdb --out outputs/era_translator
+./build/era_translator --db data/nba.duckdb --out outputs/era_translator
 ```
 
-This runs extraction -> feature engineering -> training -> evaluation and writes:
+This runs extraction -> feature engineering -> training -> evaluation and writes the
+table below. On CPU the pipeline takes ~35 seconds, plus ~3 minutes for the t-SNE
+plot (exact t-SNE over a 4,000-row sample); without gnuplot it finishes in the 35.
 
 | Artifact | Contents |
 |---|---|
-| `outputs/era_translator/model.pt` | Trained DANN checkpoint |
+| `outputs/era_translator/model.pt` | Trained DANN checkpoint (LibTorch archive) |
 | `outputs/era_translator/embeddings.csv` | 23,516 player-seasons x `z_0..z_23` + value target/prediction |
-| `outputs/era_translator/tsne_era.png` | t-SNE of the latent colored by decade |
+| `outputs/era_translator/tsne_era.png` | t-SNE of the latent colored by decade (needs gnuplot) |
 | `outputs/era_translator/comparisons.csv` | For every 2020s player-season, top-5 similar seasons in each other decade |
 | `outputs/era_translator/metrics.json` | Test R²/MSE, fresh-LR era probe, per-decade accuracy |
+
+Flags: `--db`, `--out`, `--epochs`, `--device`.
 
 ## Results (final run)
 
 | Metric | Value |
 |---|---|
-| Test value R² | 0.944 |
-| Fresh LR era probe (balanced) | 0.160 (random = 0.111; raw features = 0.376) |
+| Test value R² | 0.939 |
+| Test value MSE | 0.061 |
+| Fresh LR era probe (balanced) | 0.169 (random = 0.111) |
 | Embeddings | 23,516 rows, 24-dim latent |
 
 **Era probe**: a fresh logistic-regression classifier trained on train-split
-embeddings scores 0.160 balanced accuracy on held-out embeddings — down from
-0.376 on the raw features, approaching the 0.111 random baseline. The in-training
-era head is *not* used for this check: it collapses to predicting a single decade
-once the adversarial loss dominates (balanced accuracy exactly 1/9), which is a
-degenerate equilibrium, not evidence of invariance.
+embeddings scores 0.169 balanced accuracy on held-out embeddings, approaching the
+0.111 random baseline. (The same probe on the raw input features scored 0.376 in
+the original Python implementation.) The in-training era head is *not* used for
+this check: it collapses to predicting a single decade once the adversarial loss
+dominates (balanced accuracy exactly 1/9), which is a degenerate equilibrium, not
+evidence of invariance.
 
 ## Project layout
 
 ```
-era_translator/
-  config.py      # hyperparameters, feature lists, era buckets
-  data.py        # read-only DuckDB extraction (aggregates multi-team stints)
-  features.py    # imputation, age/position, value target, splits
-  model.py       # DANN: encoder + value head + era head + GRL
-  train.py       # SGD + momentum, era-balanced batches, centroid alignment
-  evaluate.py    # metrics, embeddings export, t-SNE, comparisons, era probe
-  main.py        # CLI entry point
-tests/           # pytest suite (13 tests)
+CMakeLists.txt   # FetchContent deps, DLL staging, gnuplot check
+src/
+  config.hpp     # hyperparameters, feature lists, era buckets
+  frame.hpp      # column-oriented table used in place of a DataFrame
+  data.cpp       # read-only DuckDB extraction (aggregates multi-team stints)
+  features.cpp   # imputation, age/position, value target, splits, scaling
+  model.cpp      # DANN: encoder + value head + era head + GRL
+  train.cpp      # SGD + momentum, era-balanced batches, centroid alignment
+  evaluate.cpp   # metrics, embeddings export, t-SNE, comparisons, era probe
+  io.cpp         # CSV escaping, metrics JSON
+  main.cpp       # CLI entry point
+tests/           # GoogleTest suite (13 tests)
 ```
 
 ## Known limitations
 
 - The 1940s (smallest, most distinctive decade: no 3PT, imputed stats) retains
-  some separability in the latent. The next lever is per-era feature normalization
-  or removing era-marker features such as `fg3_pct` from the input.
+  some separability in the latent, and its matches score far lower similarity than
+  every other decade. The next lever is per-era feature normalization or removing
+  era-marker features such as `fg3_pct` from the input.
 - The value target is a within-season z-score; "value" therefore means relative
   production within a season, not an absolute all-time scale.
+- t-SNE and the logistic-regression era probe are implemented directly on LibTorch
+  autograd rather than wrapping scikit-learn, so their numbers are close to but not
+  identical to the Python originals. The train/val/test split is likewise a
+  stratified shuffle driven by `std::mt19937_64`, not numpy's RNG, so it selects
+  different rows than the Python did.
