@@ -1,0 +1,14 @@
+# Era Translator generated artifacts
+outputs/
+outputs_test.parquet
+
+# Local warehouse data (17 GB, read-only source - never commit)
+data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Editor
+PowerShellEditorServices.json
