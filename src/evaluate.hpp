@@ -62,6 +62,11 @@ EvalResult evaluate_model(EraTranslatorDANN& model, const torch::Tensor& X, cons
 Embeddings export_embeddings(const Frame& df, EraTranslatorDANN& model, const torch::Tensor& X,
                              const std::string& out_path, torch::Device device = torch::kCPU);
 
+// Inverse of export_embeddings: rebuild an Embeddings from a written CSV, so a
+// finished run can be explored without re-running the pipeline. The latent width
+// is taken from the number of z_* header columns rather than assumed.
+Embeddings read_embeddings_csv(const std::string& path);
+
 // Correlation similarity: centered cosine (Pearson-like).
 //
 // Plain cosine collapses toward ~0.99 for all pairs once the centroid-alignment

@@ -8,6 +8,8 @@
 
 #include "config.hpp"
 #include "evaluate.hpp"
+#include "frame.hpp"
+#include "model.hpp"
 
 namespace {
 
@@ -49,6 +51,46 @@ TEST(Evaluate, QuerySimilarExcludesSamePlayer) {
     for (const era::SimilarMatch& match : matches) {
         EXPECT_NE(match.player_name, "P0");
     }
+}
+
+TEST(Evaluate, EmbeddingsCsvRoundTrip) {
+    constexpr int n = 12;
+    constexpr int64_t input_dim = 8;
+    torch::manual_seed(0);
+
+    era::Frame df;
+    for (int i = 0; i < n; ++i) {
+        df.player_id.push_back(200 + i);
+        // Row 0 carries a comma and a quote so the escape/split pair is exercised.
+        df.player_name.push_back(i == 0 ? "Smith, Jr. \"Bo\"" : "P" + std::to_string(i));
+        df.season_year.push_back(std::to_string(1990 + i) + "-" + std::to_string(91 + i));
+        df.era.push_back(i % 2 == 0 ? "1990s" : "2020s");
+        df.num["value_target"].push_back(i * 0.3333333333333333);
+    }
+
+    era::EraTranslatorDANN model(input_dim);
+    const torch::Tensor X = torch::randn({n, input_dim});
+    const std::filesystem::path out_path =
+        std::filesystem::temp_directory_path() / "era_translator_emb_test.csv";
+
+    const era::Embeddings written = era::export_embeddings(df, model, X, out_path.string());
+    const era::Embeddings loaded = era::read_embeddings_csv(out_path.string());
+
+    EXPECT_EQ(loaded.size(), written.size());
+    EXPECT_EQ(loaded.player_id, written.player_id);
+    EXPECT_EQ(loaded.player_name, written.player_name);
+    EXPECT_EQ(loaded.season_year, written.season_year);
+    EXPECT_EQ(loaded.era, written.era);
+    EXPECT_EQ(loaded.value_target, written.value_target);
+    for (int i = 0; i < n; ++i) {
+        // value_pred is written at float precision, so it round-trips as a float.
+        EXPECT_FLOAT_EQ(static_cast<float>(loaded.value_pred[i]),
+                        static_cast<float>(written.value_pred[i]));
+    }
+    EXPECT_EQ(loaded.z.sizes(), written.z.sizes());
+    EXPECT_TRUE(torch::equal(loaded.z, written.z));
+
+    std::filesystem::remove(out_path);
 }
 
 TEST(Evaluate, WriteComparisonsExcludesSamePlayer) {

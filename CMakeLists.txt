@@ -88,6 +88,55 @@ FetchContent_Declare(googletest
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(googletest)
 
+# ------------------------------------------------------------------- GUI deps
+# Everything here is permissively licensed, matching the rest of the project:
+# Hello ImGui / Dear ImGui / ImPlot / ImPlot3D are MIT, GLFW is zlib. The GUI
+# plots through ImPlot, so unlike the CLI it has no gnuplot requirement.
+option(BUILD_GUI "Build the era_translator desktop cockpit" ON)
+if(BUILD_GUI)
+    # Hello ImGui supplies Dear ImGui (docking branch), GLFW, the OpenGL3
+    # backend and the docking/window runner. It creates the `imgui` target.
+    set(HELLOIMGUI_USE_GLFW3 ON CACHE BOOL "" FORCE)
+    set(HELLOIMGUI_HAS_OPENGL3 ON CACHE BOOL "" FORCE)
+    set(HELLOIMGUI_BUILD_DEMOS OFF CACHE BOOL "" FORCE)
+    set(HELLOIMGUI_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+    set(HELLOIMGUI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(hello_imgui
+        GIT_REPOSITORY https://github.com/pthom/hello_imgui.git
+        GIT_TAG v1.92.700
+        GIT_SHALLOW TRUE)
+    FetchContent_MakeAvailable(hello_imgui)
+
+    # Dear ImGui indexes vertices with a 16-bit ImDrawIdx by default, which
+    # overflows on a 23,516-point scatter. Widening it is the fix ImPlot3D's
+    # docs call for, and PUBLIC propagates it everywhere imgui.h is included -
+    # the definition must be identical in every translation unit.
+    target_compile_definitions(imgui PUBLIC ImDrawIdx=unsigned\ int)
+
+    # ImPlot and ImPlot3D ship sources with no CMake project of their own.
+    FetchContent_Declare(implot
+        GIT_REPOSITORY https://github.com/epezent/implot.git
+        GIT_TAG v1.0
+        GIT_SHALLOW TRUE
+        SOURCE_SUBDIR not-a-cmake-project)
+    FetchContent_Declare(implot3d
+        GIT_REPOSITORY https://github.com/brenocq/implot3d.git
+        GIT_TAG v0.4
+        GIT_SHALLOW TRUE
+        SOURCE_SUBDIR not-a-cmake-project)
+    FetchContent_MakeAvailable(implot implot3d)
+
+    add_library(imgui_plots STATIC
+        "${implot_SOURCE_DIR}/implot.cpp"
+        "${implot_SOURCE_DIR}/implot_items.cpp"
+        "${implot3d_SOURCE_DIR}/implot3d.cpp"
+        "${implot3d_SOURCE_DIR}/implot3d_items.cpp"
+        "${implot3d_SOURCE_DIR}/implot3d_meshes.cpp")
+    target_include_directories(imgui_plots PUBLIC
+        "${implot_SOURCE_DIR}" "${implot3d_SOURCE_DIR}")
+    target_link_libraries(imgui_plots PUBLIC imgui)
+endif()
+
 # ------------------------------------------------------------------- Targets
 add_library(era_translator_lib STATIC
     src/data.cpp
@@ -101,6 +150,26 @@ target_link_libraries(era_translator_lib PUBLIC "${TORCH_LIBRARIES}" duckdb_lib 
 
 add_executable(era_translator src/main.cpp)
 target_link_libraries(era_translator PRIVATE era_translator_lib)
+
+if(BUILD_GUI)
+    set(GUI_SOURCES
+        gui/main.cpp
+        gui/app_state.cpp
+        gui/panel_run.cpp
+        gui/panel_metrics.cpp
+        gui/panel_explore.cpp
+        gui/panel_latent.cpp)
+    # WIN32 means no console window, which in turn means the CRT wants WinMain.
+    # Hello ImGui ships one that forwards to main(); its own add_app helper adds
+    # this source, and a hand-rolled target has to do the same.
+    if(WIN32)
+        list(APPEND GUI_SOURCES
+            "${hello_imgui_SOURCE_DIR}/hello_imgui_cmake/HelloImGui_WinMain.cpp")
+    endif()
+    add_executable(era_translator_gui WIN32 ${GUI_SOURCES})
+    target_include_directories(era_translator_gui PRIVATE gui)
+    target_link_libraries(era_translator_gui PRIVATE era_translator_lib hello_imgui imgui_plots)
+endif()
 
 enable_testing()
 add_executable(era_translator_tests
@@ -116,7 +185,11 @@ gtest_discover_tests(era_translator_tests)
 # Windows needs the torch and duckdb DLLs beside every executable that runs.
 if(WIN32)
     file(GLOB TORCH_DLLS "${TORCH_INSTALL_PREFIX}/lib/*.dll")
-    foreach(target era_translator era_translator_tests)
+    set(DLL_TARGETS era_translator era_translator_tests)
+    if(BUILD_GUI)
+        list(APPEND DLL_TARGETS era_translator_gui)
+    endif()
+    foreach(target ${DLL_TARGETS})
         add_custom_command(TARGET ${target} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${duckdb_SOURCE_DIR}/duckdb.dll" $<TARGET_FILE_DIR:${target}>

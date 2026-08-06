@@ -6,6 +6,7 @@
 #include <array>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <numeric>
 #include <random>
@@ -19,6 +20,14 @@ namespace era {
 namespace {
 
 constexpr double kInf = std::numeric_limits<double>::infinity();
+
+// The CSVs are written with '\n', but getline on a file saved elsewhere can
+// still leave a trailing '\r' that would corrupt the last field.
+void strip_cr(std::string& line) {
+    if (!line.empty() && line.back() == '\r') {
+        line.pop_back();
+    }
+}
 
 // Rows centered on the global mean and scaled to unit length, so a dot product
 // between two rows is the correlation similarity.
@@ -149,6 +158,57 @@ Embeddings export_embeddings(const Frame& df, EraTranslatorDANN& model, const to
         }
         writer.end_row();
     }
+    return emb;
+}
+
+Embeddings read_embeddings_csv(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        throw std::runtime_error("cannot read " + path);
+    }
+
+    std::string line;
+    if (!std::getline(in, line)) {
+        throw std::runtime_error("empty embeddings file: " + path);
+    }
+    strip_cr(line);
+    const std::vector<std::string> header = csv_split_line(line);
+    // Six identity/value columns, then one column per latent dimension.
+    constexpr std::size_t kIdentityCols = 6;
+    if (header.size() <= kIdentityCols || header[0] != "player_id" || header[5] != "value_pred") {
+        throw std::runtime_error("not an embeddings CSV: " + path);
+    }
+    const int64_t latent_dim = static_cast<int64_t>(header.size() - kIdentityCols);
+
+    Embeddings emb;
+    std::vector<float> latent;
+    int64_t rows = 0;
+    while (std::getline(in, line)) {
+        strip_cr(line);
+        if (line.empty()) {
+            continue;
+        }
+        const std::vector<std::string> f = csv_split_line(line);
+        if (f.size() != header.size()) {
+            throw std::runtime_error(path + ": row " + std::to_string(rows + 1) + " has " +
+                                     std::to_string(f.size()) + " fields, expected " +
+                                     std::to_string(header.size()));
+        }
+        emb.player_id.push_back(std::stoll(f[0]));
+        emb.player_name.push_back(f[1]);
+        emb.season_year.push_back(f[2]);
+        emb.era.push_back(f[3]);
+        emb.value_target.push_back(std::stod(f[4]));
+        emb.value_pred.push_back(std::stod(f[5]));
+        for (std::size_t d = kIdentityCols; d < f.size(); ++d) {
+            latent.push_back(std::stof(f[d]));
+        }
+        ++rows;
+    }
+
+    emb.z = torch::from_blob(latent.data(), {rows, latent_dim},
+                             torch::TensorOptions().dtype(torch::kFloat32))
+                .clone();
     return emb;
 }
 

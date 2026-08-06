@@ -66,6 +66,12 @@ CMake fetches its dependencies on first configure:
 | **DuckDB** 1.5.5 | Prebuilt `libduckdb-windows-amd64.zip` (~13 MB), no compile |
 | **Matplot++** 1.2.2 | Built from source |
 | **GoogleTest** 1.17.0 | Built from source |
+| **Hello ImGui** 1.92.700 (+ Dear ImGui, GLFW) | Built from source (GUI only) |
+| **ImPlot** 1.0 / **ImPlot3D** 0.4 | Built from source (GUI only) |
+
+Every dependency is permissively licensed — BSD-3 (LibTorch, GoogleTest), MIT
+(DuckDB, Matplot++, Hello ImGui, Dear ImGui, ImPlot, ImPlot3D) or zlib (GLFW).
+Pass `-DBUILD_GUI=OFF` to skip the GUI dependencies and build only the CLI.
 
 DuckDB is used through its **C API** (`duckdb.h`) — the project's own docs describe
 the C++ API as internal and unstable and recommend the C API for applications.
@@ -121,6 +127,31 @@ plot (exact t-SNE over a 4,000-row sample); without gnuplot it finishes in the 3
 
 Flags: `--db`, `--out`, `--epochs`, `--device`.
 
+## GUI
+
+`era_translator_gui` is a desktop cockpit over the same pipeline. It links
+`era_translator_lib` directly — no subprocess, no stdout parsing — so training
+runs in-process on a worker thread and reports every epoch as it happens.
+
+```bash
+./build/era_translator_gui
+```
+
+| Panel | What it shows |
+|---|---|
+| **Run** | Config, start/cancel, and live curves: train/val loss, val era accuracy against the 1/9 random line, plus the λ and LR schedules with a marker at the epoch early stopping arms |
+| **Explore** | All 23,516 player-seasons, filterable and sortable, with the top-k cross-era analogues of the selected row (`era::query_similar`) |
+| **Latent** | 3-D scatter of any three latent dimensions, one series per decade — they should overlap — and a 2-D t-SNE rendered on demand |
+| **Metrics** | R², MSE, the fresh-LR era probe against its baseline, and per-decade era recall |
+
+**Load a finished run** from the Run panel to explore without retraining: point it
+at an `embeddings.csv` and it picks up the sibling `metrics.json` too. Loading
+the full 23,516 rows takes ~150 ms.
+
+**The GUI does not need gnuplot.** It plots through ImPlot, including the t-SNE,
+so gnuplot remains a CLI-only prerequisite. The GUI writes the same artifacts as
+the CLI except `tsne_era.png`.
+
 ## Results (final run)
 
 | Metric | Value |
@@ -152,7 +183,14 @@ src/
   evaluate.cpp   # metrics, embeddings export, t-SNE, comparisons, era probe
   io.cpp         # CSV escaping, metrics JSON
   main.cpp       # CLI entry point
-tests/           # GoogleTest suite (13 tests)
+gui/
+  app_state.cpp  # background jobs (pipeline, training, t-SNE) + UI snapshots
+  panel_run.cpp  # config, start/cancel, live loss and schedule plots
+  panel_explore.cpp  # player-season table + cross-era analogues
+  panel_latent.cpp   # 3-D latent scatter by decade, 2-D t-SNE
+  panel_metrics.cpp  # metrics readout + per-decade recall
+  main.cpp       # Hello ImGui runner and docking layout
+tests/           # GoogleTest suite (14 tests)
 ```
 
 ## Known limitations

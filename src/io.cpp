@@ -3,6 +3,7 @@
 #include <array>
 #include <charconv>
 #include <stdexcept>
+#include <vector>
 
 namespace era {
 namespace {
@@ -37,6 +38,34 @@ std::string csv_escape(const std::string& field) {
     }
     escaped += '"';
     return escaped;
+}
+
+std::vector<std::string> csv_split_line(const std::string& line) {
+    std::vector<std::string> fields;
+    std::string field;
+    bool quoted = false;
+    for (std::size_t i = 0; i < line.size(); ++i) {
+        const char c = line[i];
+        if (quoted) {
+            if (c != '"') {
+                field += c;
+            } else if (i + 1 < line.size() && line[i + 1] == '"') {
+                field += '"';  // doubled quote inside a quoted field
+                ++i;
+            } else {
+                quoted = false;
+            }
+        } else if (c == '"') {
+            quoted = true;
+        } else if (c == ',') {
+            fields.push_back(field);
+            field.clear();
+        } else {
+            field += c;
+        }
+    }
+    fields.push_back(field);
+    return fields;
 }
 
 CsvWriter::CsvWriter(const std::string& path, const std::vector<std::string>& header) {

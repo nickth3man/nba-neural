@@ -13,6 +13,10 @@ namespace era {
 // Player names come from the warehouse, so they cannot be assumed comma-free.
 std::string csv_escape(const std::string& field);
 
+// Split one record into fields, undoing csv_escape. A quoted field spanning a
+// line break is not handled: no column this project writes contains a newline.
+std::vector<std::string> csv_split_line(const std::string& line);
+
 class CsvWriter {
    public:
     CsvWriter(const std::string& path, const std::vector<std::string>& header);

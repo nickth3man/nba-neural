@@ -67,7 +67,8 @@ void restore_state(torch::nn::Module& module, const StateDict& state) {
 TrainResult train_model(EraTranslatorDANN& model, const torch::Tensor& X_train,
                         const torch::Tensor& y_train, const torch::Tensor& era_train,
                         const torch::Tensor& X_val, const torch::Tensor& y_val,
-                        const torch::Tensor& era_val, int max_epochs, torch::Device device) {
+                        const torch::Tensor& era_val, int max_epochs, torch::Device device,
+                        EpochCallback on_epoch) {
     torch::manual_seed(SEED);
     model->to(device);
 
@@ -187,15 +188,18 @@ TrainResult train_model(EraTranslatorDANN& model, const torch::Tensor& X_train,
         result.history.val_loss.push_back(val_loss);
         result.history.val_era_acc.push_back(val_era_acc);
 
+        bool improved = false;
+        bool stop = false;
         if (val_loss < best_val_loss - 1e-5) {
             best_val_loss = val_loss;
             result.best_state = snapshot_state(*model);
             epochs_no_improve = 0;
+            improved = true;
         } else if (epoch >= PATIENCE_WARMUP_EPOCHS) {
             // Early stopping only engages after the lambda schedule has ramped up.
             ++epochs_no_improve;
             if (epochs_no_improve >= PATIENCE) {
-                break;
+                stop = true;
             }
         }
 
@@ -203,6 +207,16 @@ TrainResult train_model(EraTranslatorDANN& model, const torch::Tensor& X_train,
             std::printf("epoch %3d | lam %.2f | train_loss %.4f | val_loss %.4f | val_era_acc %.4f\n",
                         epoch, lam, train_loss, val_loss, val_era_acc);
             std::fflush(stdout);
+        }
+
+        // Reported even on the early-stopping epoch, so an observer sees every
+        // epoch that ran. A callback returning false cancels the run.
+        if (on_epoch && !on_epoch(EpochUpdate{epoch, lam, lr, train_loss, val_loss, val_era_acc,
+                                              improved})) {
+            stop = true;
+        }
+        if (stop) {
+            break;
         }
     }
 
